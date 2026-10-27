@@ -2329,6 +2329,12 @@ struct hdd_context {
 #ifdef WLAN_FEATURE_LOCAL_PKT_CAPTURE
 	struct hdd_lpc_info lpc_info;
 #endif
+#ifdef FEATURE_FRAME_INJECTION_SUPPORT
+	qdf_work_t monitor_restore_work;
+	enum hdd_work_status monitor_restore_work_status;
+	char monitor_restore_iface[IFNAMSIZ];
+	bool monitor_restore_pending;
+#endif
 };
 
 /**
