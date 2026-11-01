@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2015-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -58,6 +58,10 @@
 #include "ce_internal.h"
 #include <qdf_tracepoint.h>
 #include "qdf_ssr_driver_dump.h"
+
+#ifdef HIF_CE_LOG_INFO
+extern qdf_atomic_notif_head qdf_hang_event_notif_head;
+#endif
 
 void hif_dump(struct hif_opaque_softc *hif_ctx, uint8_t cmd_id, bool start)
 {
@@ -411,11 +415,6 @@ static const struct qwlan_hw qwlan_hw_list[] = {
 		.name = "WCN6450_V1",
 	},
 	{
-		.id = WCN6450_V2,
-		.subid = 0,
-		.name = "WCN6450_V2",
-	},
-	{
 		.id = QCA6490_v2_1,
 		.subid = 0,
 		.name = "QCA6490",
@@ -753,7 +752,9 @@ QDF_STATUS hif_register_recovery_notifier(struct hif_softc *hif_handle)
 
 	hif_notifier->notif_block.notifier_call = hif_recovery_notifier_cb;
 	hif_notifier->priv_data = hif_handle;
-	return qdf_hang_event_register_notifier(hif_notifier);
+	return qdf_status_from_os_return(
+		atomic_notifier_chain_register(&qdf_hang_event_notif_head,
+					       &hif_notifier->notif_block));
 }
 
 /**
@@ -767,7 +768,9 @@ QDF_STATUS hif_unregister_recovery_notifier(struct hif_softc *hif_handle)
 {
 	qdf_notif_block *hif_notifier = &hif_handle->hif_recovery_notifier;
 
-	return qdf_hang_event_unregister_notifier(hif_notifier);
+	return qdf_status_from_os_return(
+		atomic_notifier_chain_unregister(&qdf_hang_event_notif_head,
+						 &hif_notifier->notif_block));
 }
 #else
 static inline
@@ -1442,12 +1445,11 @@ QDF_STATUS hif_try_complete_tasks(struct hif_softc *scn)
 			 * There is chance of OOM thread getting scheduled
 			 * continuously or execution get delayed during low
 			 * memory state. So avoid panic and prevent suspend
-			 * if OOM thread is unable to complete pending
+			 * only if OOM thread is unable to complete pending
 			 * work.
 			 */
-			if (oom_work)
-				hif_err("OOM thread is still pending %d tasklets %d grp tasklets %d work %d",
-					oom_work, tasklet, grp_tasklet, work);
+			if ((!tasklet) && (!grp_tasklet) && (!work) && oom_work)
+				hif_err("OOM thread is still pending cannot complete the work");
 			else
 				QDF_DEBUG_PANIC("Complete tasks takes more than %u ms: tasklets %d grp tasklets %d work %d oom_work %d",
 						HIF_TASK_DRAIN_WAIT_CNT * 10,
@@ -1794,24 +1796,6 @@ static void hif_reg_write_work(void *arg)
 	qdf_atomic_sub(num_processed, &scn->active_work_cnt);
 }
 
-static inline void
-__hif_flush_delayed_reg_write_work(struct hif_softc *scn)
-{
-	qdf_flush_work(&scn->reg_write_work);
-	qdf_disable_work(&scn->reg_write_work);
-}
-
-/**
- * hif_flush_delayed_reg_write_work() - flush pending reg write work
- * @scn: hif_softc pointer
- *
- * Return: None
- */
-void hif_flush_delayed_reg_write_work(struct hif_softc *scn)
-{
-	__hif_flush_delayed_reg_write_work(scn);
-}
-
 /**
  * hif_delayed_reg_write_deinit() - De-Initialize delayed reg write processing
  * @scn: hif_softc pointer
@@ -1823,7 +1807,8 @@ void hif_flush_delayed_reg_write_work(struct hif_softc *scn)
  */
 static void hif_delayed_reg_write_deinit(struct hif_softc *scn)
 {
-	__hif_flush_delayed_reg_write_work(scn);
+	qdf_flush_work(&scn->reg_write_work);
+	qdf_disable_work(&scn->reg_write_work);
 	qdf_flush_workqueue(0, scn->reg_write_wq);
 	qdf_destroy_workqueue(0, scn->reg_write_wq);
 	qdf_mem_free(scn->reg_write_queue);
@@ -2061,7 +2046,7 @@ QDF_STATUS hif_enable(struct hif_opaque_softc *hif_ctx, struct device *dev,
 		return QDF_STATUS_E_NULL_VALUE;
 	}
 
-	status = hif_enable_bus(scn, dev, bdev, bid, type);
+	status = scn->bus_ops.hif_enable_bus(scn, dev, bdev, bid, type);
 	if (status != QDF_STATUS_SUCCESS) {
 		hif_err("hif_enable_bus error = %d", status);
 		return status;
@@ -2073,20 +2058,13 @@ QDF_STATUS hif_enable(struct hif_opaque_softc *hif_ctx, struct device *dev,
 		goto disable_bus;
 	}
 
-	if (hif_delayed_reg_write_init(scn) != QDF_STATUS_SUCCESS) {
-		hif_err("unable to initialize delayed reg write");
+	if (scn->bus_ops.hif_bus_configure(scn)) {
+		hif_err("Target probe failed");
+		status = QDF_STATUS_E_FAILURE;
 		goto hal_detach;
 	}
 
-	if (hif_bus_configure(scn)) {
-		hif_err("Target probe failed");
-		status = QDF_STATUS_E_FAILURE;
-		goto free_delayed_reg_mem;
-	}
-
-	hif_ut_suspend_init(scn);
 	hif_register_recovery_notifier(scn);
-	hif_latency_detect_timer_start(hif_ctx);
 
 	/*
 	 * Flag to avoid potential unallocated memory access from MSI
@@ -2102,12 +2080,10 @@ QDF_STATUS hif_enable(struct hif_opaque_softc *hif_ctx, struct device *dev,
 
 	return QDF_STATUS_SUCCESS;
 
-free_delayed_reg_mem:
-	hif_delayed_reg_write_deinit(scn);
 hal_detach:
 	hif_hal_detach(scn);
 disable_bus:
-	hif_disable_bus(scn);
+	scn->bus_ops.hif_disable_bus(scn);
 	return status;
 }
 
@@ -2124,15 +2100,15 @@ void hif_disable(struct hif_opaque_softc *hif_ctx, enum hif_disable_type type)
 
 	hif_unregister_recovery_notifier(scn);
 
-	hif_nointrs(scn);
+	scn->bus_ops.hif_nointrs(scn);
 	if (scn->hif_init_done == false)
-		hif_shutdown_device(hif_ctx);
+		scn->bus_ops.hif_shutdown_device(scn);
 	else
-		hif_stop(hif_ctx);
+		scn->bus_ops.hif_stop(scn);
 
 	hif_hal_detach(scn);
 
-	hif_disable_bus(scn);
+	scn->bus_ops.hif_disable_bus(scn);
 
 	hif_wlan_disable(scn);
 

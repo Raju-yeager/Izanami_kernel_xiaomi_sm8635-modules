@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2017-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -227,6 +227,20 @@ ucfg_pmo_dynamic_arp_ns_offload_runtime_allow(struct wlan_objmgr_vdev *vdev)
 	return pmo_core_dynamic_arp_ns_offload_runtime_allow(vdev);
 }
 #endif
+
+bool
+ucfg_pmo_get_ns_offload_enable_dynamic(struct wlan_objmgr_vdev *vdev)
+{
+	return pmo_core_get_ns_offload_enable_dynamic(vdev);
+}
+
+void
+ucfg_pmo_set_ns_offload_enable_dynamic(struct wlan_objmgr_vdev *vdev,
+				       enum pmo_offload_trigger trigger,
+				       bool enable)
+{
+	pmo_core_set_ns_offload_enable_dynamic(vdev, trigger, enable);
+}
 
 QDF_STATUS
 ucfg_pmo_get_ns_offload_params(struct wlan_objmgr_vdev *vdev,
@@ -739,9 +753,6 @@ ucfg_pmo_get_runtime_pm_delay(struct wlan_objmgr_psoc *psoc)
 {
 	struct pmo_psoc_priv_obj *pmo_psoc_ctx = pmo_psoc_get_priv(psoc);
 
-	if (!pmo_psoc_ctx)
-		return 0;
-
 	return pmo_psoc_ctx->psoc_cfg.runtime_pm_delay;
 }
 #endif /* FEATURE_RUNTIME_PM */
@@ -972,11 +983,6 @@ ucfg_pmo_get_active_mc_bc_apf_mode(struct wlan_objmgr_psoc *psoc)
 	struct pmo_psoc_priv_obj *pmo_psoc_ctx = pmo_psoc_get_priv(psoc);
 
 	return pmo_psoc_ctx->psoc_cfg.active_mc_bc_apf_mode;
-}
-
-bool ucfg_pmo_is_configure_apf_per_screen_state(struct wlan_objmgr_psoc *psoc)
-{
-	return pmo_core_is_configure_apf_per_screen_state(psoc);
 }
 
 #ifdef WLAN_ENABLE_GPIO_WAKEUP

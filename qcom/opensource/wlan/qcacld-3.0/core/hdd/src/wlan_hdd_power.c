@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2012-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -41,6 +41,7 @@
 #include <mac_init_api.h>
 #include <wlan_qct_sys.h>
 #include <wlan_hdd_main.h>
+extern qdf_wake_lock_t wlan_wake_lock;
 #include <wlan_hdd_assoc.h>
 #include <wlan_nlink_srv.h>
 #include <wlan_hdd_misc.h>
@@ -80,6 +81,7 @@
 #include <wlan_cfg80211_mc_cp_stats.h>
 #include "wlan_p2p_ucfg_api.h"
 #include "wlan_mlme_ucfg_api.h"
+#include "wlan_pmo_ns.h"
 #include "wlan_osif_request_manager.h"
 #include <wlan_hdd_sar_limits.h>
 #include "wlan_pkt_capture_ucfg_api.h"
@@ -541,10 +543,10 @@ void hdd_enable_ns_offload(struct hdd_adapter *adapter,
 		goto free_req;
 	}
 
-	if (ucfg_pmo_get_arp_ns_offload_dynamic_disable(vdev)) {
-		hdd_debug("Dynamic arp ns offload disabled");
-		ucfg_pmo_flush_ns_offload_req(vdev);
-		goto skip_cache_ns;
+	pmo_core_set_ns_offload_enable_dynamic(vdev, trigger, true);
+	if (!pmo_core_get_ns_offload_enable_dynamic(vdev)) {
+		hdd_debug("NS offload is dynamically disabled");
+		goto free_req;
 	}
 
 	/* Unicast Addresses */
@@ -574,7 +576,6 @@ void hdd_enable_ns_offload(struct hdd_adapter *adapter,
 		goto free_req;
 	}
 
-skip_cache_ns:
 	/* enable ns request */
 	status = ucfg_pmo_enable_ns_offload_in_fwr(vdev, trigger);
 	if (QDF_IS_STATUS_ERROR(status)) {
@@ -611,6 +612,13 @@ void hdd_disable_ns_offload(struct hdd_adapter *adapter,
 		hdd_err("Failed to flush NS Offload");
 		goto out;
 	}
+
+	if (!pmo_core_get_ns_offload_enable_dynamic(vdev)) {
+		hdd_debug("NS offload is already dynamically disabled");
+		goto out;
+	}
+
+	pmo_core_set_ns_offload_enable_dynamic(vdev, trigger, false);
 
 	status = ucfg_pmo_disable_ns_offload_in_fwr(vdev, trigger);
 	if (status != QDF_STATUS_SUCCESS)
@@ -1542,6 +1550,9 @@ void hdd_disable_mc_addr_filtering(struct hdd_adapter *adapter,
 	if (wlan_hdd_validate_context(hdd_ctx))
 		return;
 
+	if (!hdd_cm_is_vdev_associated(adapter->deflink))
+		return;
+
 	status = ucfg_pmo_disable_mc_addr_filtering_in_fwr(
 						hdd_ctx->psoc,
 						adapter->deflink->vdev_id,
@@ -1565,6 +1576,9 @@ void hdd_disable_and_flush_mc_addr_list(struct hdd_adapter *adapter,
 	struct hdd_context *hdd_ctx = WLAN_HDD_GET_CTX(adapter);
 	QDF_STATUS status;
 
+	if (!hdd_cm_is_vdev_associated(adapter->deflink))
+		goto flush_mc_list;
+
 	/* disable mc list first because the mc list is cached in PMO */
 	status = ucfg_pmo_disable_mc_addr_filtering_in_fwr(
 						hdd_ctx->psoc,
@@ -1573,10 +1587,12 @@ void hdd_disable_and_flush_mc_addr_list(struct hdd_adapter *adapter,
 	if (QDF_IS_STATUS_ERROR(status))
 		hdd_debug("failed to disable mc list; status:%d", status);
 
+flush_mc_list:
 	status = ucfg_pmo_flush_mc_addr_list(hdd_ctx->psoc,
 					     adapter->deflink->vdev_id);
 	if (QDF_IS_STATUS_ERROR(status))
 		hdd_debug("failed to flush mc list; status:%d", status);
+
 }
 
 /**
@@ -1873,14 +1889,6 @@ QDF_STATUS hdd_wlan_shutdown(void)
 	if (!hdd_ctx)
 		return QDF_STATUS_E_FAILURE;
 
-	if (ucfg_ipa_is_enabled()) {
-		ucfg_ipa_uc_force_pipe_shutdown(hdd_ctx->pdev);
-
-		if (pld_is_fw_rejuvenate(hdd_ctx->parent_dev) ||
-		    pld_is_pdr(hdd_ctx->parent_dev))
-			ucfg_ipa_fw_rejuvenate_send_msg(hdd_ctx->pdev);
-	}
-
 	hdd_set_connection_in_progress(false);
 
 	hdd_debug("Invoking packetdump deregistration API");
@@ -2127,7 +2135,8 @@ QDF_STATUS hdd_wlan_re_init(void)
 	bool bug_on_reinit_failure = CFG_BUG_ON_REINIT_FAILURE_DEFAULT;
 	bool value;
 
-	hdd_prevent_suspend(WIFI_POWER_EVENT_WAKELOCK_DRIVER_REINIT);
+	qdf_wake_lock_acquire(&wlan_wake_lock,
+			      WIFI_POWER_EVENT_WAKELOCK_DRIVER_REINIT);
 
 	/* Get the HDD context */
 	hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
@@ -2158,7 +2167,8 @@ QDF_STATUS hdd_wlan_re_init(void)
 	hdd_ctx->bt_coex_mode_set = false;
 
 	/* Allow the phone to go to sleep */
-	hdd_allow_suspend(WIFI_POWER_EVENT_WAKELOCK_DRIVER_REINIT);
+	qdf_wake_lock_release(&wlan_wake_lock,
+			      WIFI_POWER_EVENT_WAKELOCK_DRIVER_REINIT);
 	/* set chip power save failure detected callback */
 	sme_set_chip_pwr_save_fail_cb(hdd_ctx->mac_handle,
 				      hdd_chip_pwr_save_fail_detected_cb);
@@ -2189,7 +2199,8 @@ err_re_init:
 
 err_ctx_null:
 	/* Allow the phone to go to sleep */
-	hdd_allow_suspend(WIFI_POWER_EVENT_WAKELOCK_DRIVER_REINIT);
+	qdf_wake_lock_release(&wlan_wake_lock,
+			      WIFI_POWER_EVENT_WAKELOCK_DRIVER_REINIT);
 	if (bug_on_reinit_failure)
 		QDF_BUG(0);
 	return -EPERM;
@@ -3386,16 +3397,9 @@ static int __wlan_hdd_cfg80211_get_txpower(struct wiphy *wiphy,
 	return wlan_hdd_get_tx_power(adapter, dbm);
 }
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0))
 int wlan_hdd_cfg80211_get_txpower(struct wiphy *wiphy,
-				  struct wireless_dev *wdev,
-				  unsigned int link_id,
-				  int *dbm)
-#else
-int wlan_hdd_cfg80211_get_txpower(struct wiphy *wiphy,
-				  struct wireless_dev *wdev,
-				  int *dbm)
-#endif
+					 struct wireless_dev *wdev,
+					 int *dbm)
 {
 	struct osif_psoc_sync *psoc_sync;
 	int errno;

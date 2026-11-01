@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2012-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -38,55 +38,6 @@
 #include "wlan_mlme_vdev_mgr_interface.h"
 
 typedef void *WMA_HANDLE;
-
-#define WMA_MGMT_TX_INJECTION_DESC_ID 0xffff
-
-#ifdef FEATURE_FRAME_INJECTION_SUPPORT
-QDF_STATUS wma_injection_tx(qdf_nbuf_t nbuf, uint8_t monitor_vdev_id);
-QDF_STATUS
-wma_injection_channel_change_begin(uint8_t monitor_vdev_id,
-				   uint32_t chanfreq);
-void wma_injection_channel_change_end(void);
-bool wma_injection_complete(void *wma_handle, uint16_t desc_id,
-			    uint32_t status);
-bool wma_injection_dp_complete(void *wma_handle, qdf_nbuf_t nbuf,
-			       int32_t status);
-void wma_injection_pre_stop_cleanup(void);
-#else
-static inline QDF_STATUS
-wma_injection_tx(qdf_nbuf_t nbuf, uint8_t monitor_vdev_id)
-{
-	return QDF_STATUS_E_NOSUPPORT;
-}
-
-static inline QDF_STATUS
-wma_injection_channel_change_begin(uint8_t monitor_vdev_id,
-				   uint32_t chanfreq)
-{
-	return QDF_STATUS_SUCCESS;
-}
-
-static inline void wma_injection_channel_change_end(void)
-{
-}
-
-static inline bool
-wma_injection_complete(void *wma_handle, uint16_t desc_id,
-		       uint32_t status)
-{
-	return false;
-}
-
-static inline bool
-wma_injection_dp_complete(void *wma_handle, qdf_nbuf_t nbuf, int32_t status)
-{
-	return false;
-}
-
-static inline void wma_injection_pre_stop_cleanup(void)
-{
-}
-#endif
 
 /**
  * enum GEN_PARAM - general parameters
@@ -152,9 +103,9 @@ struct wma_ps_params {
 
 /**
  * enum wma_sta_ps_scheme_cfg - STA power save schemes
- * @WMA_STA_PS_OPM_CONSERVATIVE: Conservative OPM mode
- * @WMA_STA_PS_OPM_AGGRESSIVE: Aggressive OPM mode
- * @WMA_STA_PS_USER_DEF: User defined OPM mode
+ * @WMA_STA_PS_OPM_CONSERVATIVE - Conservative OPM mode
+ * @WMA_STA_PS_OPM_AGGRESSIVE - Aggressive OPM mode
+ * @WMA_STA_PS_USER_DEF - User defined OPM mode
  */
 enum wma_sta_ps_scheme_cfg {
 	WMA_STA_PS_OPM_CONSERVATIVE = 0,
@@ -590,40 +541,6 @@ QDF_STATUS wma_set_vc_mode_config(void *wma_handle,
 QDF_STATUS wma_process_dhcp_ind(WMA_HANDLE wma_handle,
 				tAniDHCPInd *ta_dhcp_ind);
 
-#ifdef FEATURE_WLAN_APF
-/**
- * wma_enable_active_apf_mode() - Enable apf mode.
- * @handle: pointer to wma handle.
- * @ta_dhcp_ind: dhcp indicator.
- *
- * Enable apf mode.
- *
- * Return: QDF_STATUS.
- */
-QDF_STATUS wma_enable_active_apf_mode(WMA_HANDLE handle, tAniDHCPInd *ta_dhcp_ind);
-
-/**
- * wma_disable_active_apf_mode() - Disable apf mode.
- * @handle: pointer to wma handle.
- * @ta_dhcp_ind: dhcp indicator.
- *
- * Disable apf mode.
- *
- * Return: QDF_STATUS.
- */
-QDF_STATUS wma_disable_active_apf_mode(WMA_HANDLE handle, tAniDHCPInd *ta_dhcp_ind);
-#else
-QDF_STATUS wma_enable_active_apf_mode(WMA_HANDLE handle, tAniDHCPInd *ta_dhcp_ind)
-{
-	return QDF_STATUS_SUCCESS;
-}
-
-QDF_STATUS wma_disable_active_apf_mode(WMA_HANDLE handle, tAniDHCPInd *ta_dhcp_ind)
-{
-	return QDF_STATUS_SUCCESS;
-}
-#endif
-
 /**
  * wma_wmi_stop() - send wmi stop cmd
  *
@@ -987,22 +904,4 @@ void wma_cleanup_vdev(struct wlan_objmgr_vdev *vdev);
  * Return: None
  */
 void wma_set_wakeup_logs_to_console(bool value);
-
-#ifdef FEATURE_WLAN_APF
-/**
- * wma_get_fw_active_apf_mode() - convert active_apf_mode to WMI
- * configurable APF mode
- * @mode: APF mode
- *
- * Return: FW configurable APF mode
- */
-enum wmi_host_active_apf_mode
-wma_get_fw_active_apf_mode(enum active_apf_mode mode);
-#else
-static inline enum wmi_host_active_apf_mode
-wma_get_fw_active_apf_mode(enum active_apf_mode mode)
-{
-	return WMI_HOST_ACTIVE_APF_DISABLED;
-}
-#endif /* FEATURE_WLAN_APF */
 #endif /* WMA_API_H */

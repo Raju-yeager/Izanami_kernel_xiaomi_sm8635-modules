@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -25,8 +25,6 @@
 #if IS_ENABLED(CONFIG_QCOM_MINIDUMP)
 #include <soc/qcom/minidump.h>
 #endif
-#include <linux/regulator/consumer.h>
-#include <linux/nvmem-consumer.h>
 
 #include "cnss_plat_ipc_qmi.h"
 #include "cnss_utils.h"
@@ -101,7 +99,7 @@ enum cnss_recovery_type {
 #ifdef CONFIG_CNSS_SUPPORT_DUAL_DEV
 #define CNSS_MAX_DEV_NUM		2
 static struct cnss_plat_data *plat_env[CNSS_MAX_DEV_NUM];
-static atomic_t plat_env_count;
+static int plat_env_count;
 #else
 static struct cnss_plat_data *plat_env;
 #endif
@@ -133,41 +131,14 @@ bool cnss_check_driver_loading_allowed(void)
 }
 
 #ifdef CONFIG_CNSS_SUPPORT_DUAL_DEV
-static void cnss_init_plat_env_count(void)
-{
-	atomic_set(&plat_env_count, 0);
-}
-
-static void cnss_inc_plat_env_count(void)
-{
-	atomic_inc(&plat_env_count);
-}
-
-static void cnss_dec_plat_env_count(void)
-{
-	atomic_dec(&plat_env_count);
-}
-
-static int cnss_get_plat_env_count(void)
-{
-	return atomic_read(&plat_env_count);
-}
-
-int cnss_get_max_plat_env_count(void)
-{
-	return CNSS_MAX_DEV_NUM;
-}
-
 static void cnss_set_plat_priv(struct platform_device *plat_dev,
 			       struct cnss_plat_data *plat_priv)
 {
-	int env_count = cnss_get_plat_env_count();
-
-	cnss_pr_dbg("Set plat_priv at %d", env_count);
+	cnss_pr_dbg("Set plat_priv at %d", plat_env_count);
 	if (plat_priv) {
-		plat_priv->plat_idx = env_count;
+		plat_priv->plat_idx = plat_env_count;
 		plat_env[plat_priv->plat_idx] = plat_priv;
-		cnss_inc_plat_env_count();
+		plat_env_count++;
 	}
 }
 
@@ -179,8 +150,8 @@ struct cnss_plat_data *cnss_get_plat_priv(struct platform_device
 	if (!plat_dev)
 		return NULL;
 
-	for (i = 0; i < CNSS_MAX_DEV_NUM; i++) {
-		if (plat_env[i] && plat_env[i]->plat_dev == plat_dev)
+	for (i = 0; i < plat_env_count; i++) {
+		if (plat_env[i]->plat_dev == plat_dev)
 			return plat_env[i];
 	}
 	return NULL;
@@ -192,7 +163,7 @@ struct cnss_plat_data *cnss_get_first_plat_priv(struct platform_device
 	int i;
 
 	if (!plat_dev) {
-		for (i = 0; i < CNSS_MAX_DEV_NUM; i++) {
+		for (i = 0; i < plat_env_count; i++) {
 			if (plat_env[i])
 				return plat_env[i];
 		}
@@ -204,7 +175,7 @@ static void cnss_clear_plat_priv(struct cnss_plat_data *plat_priv)
 {
 	cnss_pr_dbg("Clear plat_priv at %d", plat_priv->plat_idx);
 	plat_env[plat_priv->plat_idx] = NULL;
-	cnss_dec_plat_env_count();
+	plat_env_count--;
 }
 
 static int cnss_set_device_name(struct cnss_plat_data *plat_priv)
@@ -218,13 +189,17 @@ static int cnss_set_device_name(struct cnss_plat_data *plat_priv)
 static int cnss_plat_env_available(void)
 {
 	int ret = 0;
-	int env_count = cnss_get_plat_env_count();
 
-	if (env_count >= CNSS_MAX_DEV_NUM) {
+	if (plat_env_count >= CNSS_MAX_DEV_NUM) {
 		cnss_pr_err("ERROR: No space to store plat_priv\n");
 		ret = -ENOMEM;
 	}
 	return ret;
+}
+
+int cnss_get_plat_env_count(void)
+{
+	return plat_env_count;
 }
 
 struct cnss_plat_data *cnss_get_plat_env(int index)
@@ -236,8 +211,8 @@ struct cnss_plat_data *cnss_get_plat_priv_by_rc_num(int rc_num)
 {
 	int i;
 
-	for (i = 0; i < CNSS_MAX_DEV_NUM; i++) {
-		if (plat_env[i] && plat_env[i]->rc_num == rc_num)
+	for (i = 0; i < plat_env_count; i++) {
+		if (plat_env[i]->rc_num == rc_num)
 			return plat_env[i];
 	}
 	return NULL;
@@ -276,10 +251,6 @@ cnss_get_pld_bus_ops_name(struct cnss_plat_data *plat_priv)
 }
 
 #else
-static void cnss_init_plat_env_count(void)
-{
-}
-
 static void cnss_set_plat_priv(struct platform_device *plat_dev,
 			       struct cnss_plat_data *plat_priv)
 {
@@ -472,51 +443,6 @@ static int cnss_get_audio_iommu_domain(struct cnss_plat_data *plat_priv)
 	return 0;
 }
 
-bool cnss_get_audio_shared_iommu_group_cap(struct device *dev)
-{
-	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
-	struct device_node *audio_ion_node;
-	struct device_node *cnss_iommu_group_node;
-	struct device_node *audio_iommu_group_node;
-
-	if (!plat_priv)
-		return false;
-
-	audio_ion_node = of_find_compatible_node(NULL, NULL,
-						 "qcom,msm-audio-ion");
-	if (!audio_ion_node) {
-		cnss_pr_err("Unable to get Audio ion node");
-		return false;
-	}
-
-	audio_iommu_group_node = of_parse_phandle(audio_ion_node,
-						  "qcom,iommu-group", 0);
-	of_node_put(audio_ion_node);
-	if (!audio_iommu_group_node) {
-		cnss_pr_err("Unable to get audio iommu group phandle");
-		return false;
-	}
-	of_node_put(audio_iommu_group_node);
-
-	cnss_iommu_group_node = of_parse_phandle(dev->of_node,
-						 "qcom,iommu-group", 0);
-	if (!cnss_iommu_group_node) {
-		cnss_pr_err("Unable to get cnss iommu group phandle");
-		return false;
-	}
-	of_node_put(cnss_iommu_group_node);
-
-	if (cnss_iommu_group_node == audio_iommu_group_node) {
-		plat_priv->is_audio_shared_iommu_group = true;
-		cnss_pr_info("CNSS and Audio share IOMMU group");
-	} else {
-		cnss_pr_info("CNSS and Audio do not share IOMMU group");
-	}
-
-	return plat_priv->is_audio_shared_iommu_group;
-}
-EXPORT_SYMBOL(cnss_get_audio_shared_iommu_group_cap);
-
 int cnss_set_feature_list(struct cnss_plat_data *plat_priv,
 			  enum cnss_feature_v01 feature)
 {
@@ -664,6 +590,8 @@ bool cnss_get_fw_cap(struct device *dev, enum cnss_fw_caps fw_cap)
 	case CNSS_FW_CAP_DIRECT_LINK_SUPPORT:
 		is_supported = !!(plat_priv->fw_caps &
 				  QMI_WLFW_DIRECT_LINK_SUPPORT_V01);
+		if (is_supported && cnss_get_audio_iommu_domain(plat_priv))
+			is_supported = false;
 		break;
 	case CNSS_FW_CAP_CALDB_SEG_DDR_SUPPORT:
 		is_supported = !!(plat_priv->fw_caps &
@@ -678,84 +606,6 @@ bool cnss_get_fw_cap(struct device *dev, enum cnss_fw_caps fw_cap)
 	return is_supported;
 }
 EXPORT_SYMBOL(cnss_get_fw_cap);
-
-/**
- * cnss_audio_is_direct_link_supported - Check whether Audio can be used for direct link support
- * @dev: Device
- *
- * Return: TRUE if supported, FALSE on failure or if not supported
- */
-bool cnss_audio_is_direct_link_supported(struct device *dev)
-{
-	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
-	bool is_supported = false;
-
-	if (!plat_priv) {
-		cnss_pr_err("plat_priv not available to check audio direct link cap\n");
-		return is_supported;
-	}
-
-	if (cnss_get_audio_iommu_domain(plat_priv) == 0)
-		is_supported = true;
-
-	return is_supported;
-}
-EXPORT_SYMBOL(cnss_audio_is_direct_link_supported);
-
-/**
- * cnss_ipa_wlan_shared_smmu_supported: Check whether shared SMMU context bank
- *                                      can be used between IPA and WLAN.
- * @dev: Device
- *
- * Return: TRUE if supported, FALSE on failure or if not supported
- */
-bool cnss_ipa_wlan_shared_smmu_supported(struct device *dev)
-{
-	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
-	struct device_node *ipa_wlan_smmu_node;
-	struct device_node *cnss_iommu_group_node;
-	struct device_node *ipa_iommu_group_node;
-
-	if (!plat_priv) {
-		cnss_pr_err("plat_priv not available for IPA Shared CB cap\n");
-		return false;
-	}
-
-	ipa_wlan_smmu_node = of_find_compatible_node(NULL, NULL,
-						     "qcom,ipa-smmu-wlan-cb");
-	if (!ipa_wlan_smmu_node) {
-		cnss_pr_err("ipa-smmu-wlan-cb not enabled");
-		return false;
-	}
-
-	ipa_iommu_group_node = of_parse_phandle(ipa_wlan_smmu_node,
-						"qcom,iommu-group", 0);
-	of_node_put(ipa_wlan_smmu_node);
-
-	if (!ipa_iommu_group_node) {
-		cnss_pr_err("Unable to get ipa iommu group phandle");
-		return false;
-	}
-	of_node_put(ipa_iommu_group_node);
-
-	cnss_iommu_group_node = of_parse_phandle(dev->of_node,
-						 "qcom,iommu-group", 0);
-	if (!cnss_iommu_group_node) {
-		cnss_pr_err("Unable to get cnss iommu group phandle");
-		return false;
-	}
-	of_node_put(cnss_iommu_group_node);
-
-	if (cnss_iommu_group_node == ipa_iommu_group_node) {
-		plat_priv->ipa_shared_cb_enable = true;
-		cnss_pr_info("CNSS and IPA share IOMMU group");
-	} else {
-		cnss_pr_info("CNSS and IPA do not share IOMMU group");
-	}
-
-	return plat_priv->ipa_shared_cb_enable;
-}
-EXPORT_SYMBOL(cnss_ipa_wlan_shared_smmu_supported);
 
 void cnss_request_pm_qos(struct device *dev, u32 qos_val)
 {
@@ -880,9 +730,6 @@ int cnss_audio_smmu_map(struct device *dev, phys_addr_t paddr,
 	if (!plat_priv->audio_iommu_domain)
 		return -EINVAL;
 
-	if (plat_priv->is_audio_shared_iommu_group)
-		return 0;
-
 	page_offset = iova & (PAGE_SIZE - 1);
 	if (page_offset + size > PAGE_SIZE)
 		size += PAGE_SIZE;
@@ -901,8 +748,10 @@ void cnss_audio_smmu_unmap(struct device *dev, dma_addr_t iova, size_t size)
 	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
 	uint32_t page_offset;
 
-	if (!plat_priv || !plat_priv->audio_iommu_domain ||
-	    plat_priv->is_audio_shared_iommu_group)
+	if (!plat_priv)
+		return;
+
+	if (!plat_priv->audio_iommu_domain)
 		return;
 
 	page_offset = iova & (PAGE_SIZE - 1);
@@ -1383,10 +1232,6 @@ static char *cnss_driver_event_to_str(enum cnss_driver_event_type type)
 		return "QDSS_TRACE_FREE";
 	case CNSS_DRIVER_EVENT_QDSS_TRACE_REQ_DATA:
 		return "QDSS_TRACE_REQ_DATA";
-	case CNSS_DRIVER_EVENT_RESUME_POST_SOL:
-		return "RESUME_POST_SOL";
-	case CNSS_DRIVER_EVENT_XO_TRIM_IND:
-		return "XO_TRIM_IND";
 	case CNSS_DRIVER_EVENT_MAX:
 		return "EVENT_MAX";
 	}
@@ -1696,108 +1541,9 @@ int cnss_idle_shutdown(struct device *dev)
 }
 EXPORT_SYMBOL(cnss_idle_shutdown);
 
-/**
- * cnss_xo_trim_init - Initialize configurations for XO trim
- * @plat_priv: Pointer to cnss platform data
- *
- * This function attempts to retrieve the register for inputting XO calibration
- * data and the regulator to trigger the PBS from DTS.
- *
- * Return: None
- */
-static void cnss_xo_trim_init(struct cnss_plat_data *plat_priv)
-{
-	struct device *dev;
-	struct cnss_xo_trim_config *xo_trim_conf;
-
-	dev = &plat_priv->plat_dev->dev;
-	xo_trim_conf = &plat_priv->xo_trim_conf;
-
-	xo_trim_conf->xo_calib_reg = devm_nvmem_cell_get(dev, "xo_calib_reg");
-	if (IS_ERR(xo_trim_conf->xo_calib_reg)) {
-		cnss_pr_dbg("Invalid xo_calib_reg: %ld\n",
-			    PTR_ERR(xo_trim_conf->xo_calib_reg));
-		return;
-	}
-
-	xo_trim_conf->wcal_pbs = devm_regulator_get_optional(dev, "wcal-pbs");
-	if (IS_ERR(xo_trim_conf->wcal_pbs)) {
-		cnss_pr_dbg("Invalid wcal_pbs: %ld\n",
-			    PTR_ERR(xo_trim_conf->wcal_pbs));
-		return;
-	}
-
-	cnss_pr_dbg("XO trim initialized\n");
-}
-
-/**
- * cnss_xo_trim_deinit - Deinitialize configurations for XO trim
- * @plat_priv: Pointer to cnss platform data
- *
- * Return: None
- */
-static void cnss_xo_trim_deinit(struct cnss_plat_data *plat_priv)
-{
-	/* The resources allocated by devm_* functions will be automatically
-	 * freed by the resource manager when the device is released.
-	 */
-	cnss_pr_dbg("XO trim de-initialized\n");
-}
-
-/**
- * cnss_xo_trim_perform - Perform the XO trim
- * @xo_trim_conf: pointer to config for XO trim
- *
- * This function writes the new XO trim value to the NVMEM location exposed by
- * PMIC. It then triggers PBS sequence using the WLAN_CAL regulator resource by
- * calling regulator_enable(), followed by regulator_disable().
- * This sequence causes PMIC PBS to apply the new trim value to PMIC XO trim
- * settings, leading to an adjustment in the crystal oscillator frequency.
- *
- * Return: 0 on success, errno otherwise
- */
-static int cnss_xo_trim_perform(struct cnss_xo_trim_config *xo_trim_conf)
-{
-	int ret;
-
-	if (IS_ERR_OR_NULL(xo_trim_conf->xo_calib_reg) ||
-	    IS_ERR_OR_NULL(xo_trim_conf->wcal_pbs)) {
-		cnss_pr_err("Invalid xo trim config\n");
-		return -EINVAL;
-	}
-
-	ret = nvmem_cell_write(xo_trim_conf->xo_calib_reg,
-			       &xo_trim_conf->trim_val,
-			       sizeof(xo_trim_conf->trim_val));
-	if (ret < 0) {
-		cnss_pr_err("Fail to write xo_calib_reg, ret = %d\n", ret);
-		return ret;
-	}
-
-	/* Enable/disable regulator to trigger PBS sequence */
-	ret = regulator_enable(xo_trim_conf->wcal_pbs);
-	if (ret) {
-		cnss_pr_err("Fail to enable wcal_pbs: %d\n", ret);
-		return ret;
-	}
-
-	ret = regulator_disable(xo_trim_conf->wcal_pbs);
-	if (ret) {
-		cnss_pr_err("Fail to disable wcal_pbs: %d\n", ret);
-		return ret;
-	}
-
-	return 0;
-}
-
 static int cnss_get_resources(struct cnss_plat_data *plat_priv)
 {
 	int ret = 0;
-
-	if (plat_priv->is_fw_managed_pwr) {
-		ret = cnss_fw_managed_domain_attach(plat_priv);
-		goto out;
-	}
 
 	ret = cnss_get_vreg_type(plat_priv, CNSS_VREG_PRIM);
 	if (ret < 0) {
@@ -1817,8 +1563,6 @@ static int cnss_get_resources(struct cnss_plat_data *plat_priv)
 		goto put_clk;
 	}
 
-	/* Non-fatal and continue if configuration is unavailable */
-	cnss_xo_trim_init(plat_priv);
 	return 0;
 
 put_clk:
@@ -1831,18 +1575,6 @@ out:
 
 static void cnss_put_resources(struct cnss_plat_data *plat_priv)
 {
-	cnss_xo_trim_deinit(plat_priv);
-
-	if (plat_priv->is_fw_managed_pwr) {
-		if (plat_priv->powered_on) {
-			cnss_fw_managed_power_gpio(plat_priv,
-						   false);
-			cnss_fw_managed_power_regulator(plat_priv,
-							false);
-		}
-		cnss_fw_managed_domain_detach(plat_priv);
-		return;
-	}
 	cnss_put_clk(plat_priv);
 	cnss_put_vreg_type(plat_priv, CNSS_VREG_PRIM);
 }
@@ -2343,8 +2075,6 @@ static const char *cnss_recovery_reason_to_str(enum cnss_recovery_reason reason)
 		return "RDDM";
 	case CNSS_REASON_TIMEOUT:
 		return "TIMEOUT";
-	case CNSS_REASON_FW_ASSERTION_FAIL:
-		return "FW_ASSERTION_FAIL";
 	}
 
 	return "UNKNOWN";
@@ -2672,25 +2402,6 @@ int cnss_qmi_send(struct device *dev, int type, void *cmd,
 }
 EXPORT_SYMBOL(cnss_qmi_send);
 
-int cnss_register_driver_async_data_cb(struct device *dev, void *cb_ctx,
-				       int (*cb)(void *ctx, uint16_t type,
-						 void *event, int event_len))
-{
-	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
-
-	if (!plat_priv)
-		return -ENODEV;
-
-	if (!test_bit(CNSS_QMI_WLFW_CONNECTED, &plat_priv->driver_state))
-		return -EINVAL;
-
-	plat_priv->get_driver_async_data_cb = cb;
-	plat_priv->get_driver_async_data_ctx = cb_ctx;
-
-	return 0;
-}
-EXPORT_SYMBOL(cnss_register_driver_async_data_cb);
-
 static int cnss_cold_boot_cal_start_hdlr(struct cnss_plat_data *plat_priv)
 {
 	int ret = 0;
@@ -2977,82 +2688,6 @@ static int cnss_qdss_trace_req_data_hdlr(struct cnss_plat_data *plat_priv,
 	return ret;
 }
 
-#if IS_ENABLED(CONFIG_MEM_ALLOC_FALLBACK)
-static bool
-cnss_req_mem_results_handle(struct cnss_plat_data *plat_priv,
-			    int ret)
-{
-	cnss_pr_dbg("process results %d", ret);
-
-	/*
-	 * Only HSP to be veriefd support retry,
-	 * so consider HSP firstly.
-	 * Other chips keep the same logic as before
-	 */
-	if (plat_priv->device_id != QCA6490_DEVICE_ID)
-		return !!ret;
-
-	if (ret == -ENOMEM) { /* continue send qmi resonse to ask for retry */
-		cnss_pr_dbg("clear mem seg len\n");
-		cnss_bus_free_fw_mem(plat_priv, QMI_WLFW_MAX_NUM_MEM_SEG_V01);
-		plat_priv->smaller_size_mem_req = true;
-		return false;
-	} else if (ret == 0) { /* continue send qmi response */
-		plat_priv->smaller_size_mem_req = false;
-		return false;
-	} else { /* break */
-		return true;
-	}
-}
-#else
-static bool
-cnss_req_mem_results_handle(struct cnss_plat_data *plat_priv,
-			    int ret)
-{
-	return !!ret;
-}
-#endif
-static int cnss_resume_post_sol_hdlr(struct cnss_plat_data *plat_priv,
-					  void *data)
-{
-	int ret = 0;
-
-	if (!plat_priv)
-		return -ENODEV;
-
-	cnss_bus_recover_link_post_sol(plat_priv);
-
-	kfree(data);
-	return ret;
-}
-
-/**
- * cnss_xo_trim_ind_hdlr - Handler for XO trim indication.
- * @plat_priv: Pointer to platform driver context.
- * @data: Pointer to event data that holds the trim value.
- *
- * This function performs XO trim and notifies target of the result.
- *
- * Return: 0 on success, errno othrewise
- */
-static int cnss_xo_trim_ind_hdlr(struct cnss_plat_data *plat_priv, void *data)
-{
-	int ret = -EINVAL;
-
-	if (!data)
-		goto out;
-
-	plat_priv->xo_trim_conf.trim_val = *((u8 *)data);
-	kfree(data);
-
-	ret = cnss_xo_trim_perform(&plat_priv->xo_trim_conf);
-	cnss_pr_dbg("XO trim result with value(%u): %d\n",
-		    plat_priv->xo_trim_conf.trim_val, ret);
-
-out:
-	return cnss_wlfw_xo_trim_result_send_sync(plat_priv, ret);
-}
-
 static void cnss_driver_event_work(struct work_struct *work)
 {
 	struct cnss_plat_data *plat_priv =
@@ -3060,7 +2695,6 @@ static void cnss_driver_event_work(struct work_struct *work)
 	struct cnss_driver_event *event;
 	unsigned long flags;
 	int ret = 0;
-	bool is_break = false;
 
 	if (!plat_priv) {
 		cnss_pr_err("plat_priv is NULL!\n");
@@ -3091,8 +2725,7 @@ static void cnss_driver_event_work(struct work_struct *work)
 			break;
 		case CNSS_DRIVER_EVENT_REQUEST_MEM:
 			ret = cnss_bus_alloc_fw_mem(plat_priv);
-			is_break = cnss_req_mem_results_handle(plat_priv, ret);
-			if (is_break)
+			if (ret)
 				break;
 			ret = cnss_wlfw_respond_mem_send_sync(plat_priv);
 			break;
@@ -3158,13 +2791,6 @@ static void cnss_driver_event_work(struct work_struct *work)
 		case CNSS_DRIVER_EVENT_QDSS_TRACE_REQ_DATA:
 			ret = cnss_qdss_trace_req_data_hdlr(plat_priv,
 							    event->data);
-			break;
-		case CNSS_DRIVER_EVENT_RESUME_POST_SOL:
-			ret = cnss_resume_post_sol_hdlr(plat_priv,
-							     event->data);
-			break;
-		case CNSS_DRIVER_EVENT_XO_TRIM_IND:
-			ret = cnss_xo_trim_ind_hdlr(plat_priv, event->data);
 			break;
 		default:
 			cnss_pr_err("Invalid driver event type: %d",
@@ -3371,26 +2997,6 @@ static void cnss_destroy_ramdump_device(struct cnss_plat_data *plat_priv,
 }
 #endif
 
-#if IS_ENABLED(CONFIG_CNSS2_DISABLE_SSR_RAMDUMP)
-static bool cnss_dump_enabled(void)
-{
-	return false;
-}
-#else
-#if IS_ENABLED(CONFIG_QCOM_RAMDUMP)
-static bool cnss_dump_enabled(void)
-{
-	return dump_enabled();
-}
-#else
-/* Saving dump to file system is always needed in this case. */
-static bool cnss_dump_enabled(void)
-{
-	return true;
-}
-#endif /* IS_ENABLED(CONFIG_QCOM_RAMDUMP) */
-#endif /* IS_ENABLED(CONFIG_CNSS2_DISABLE_SSR_RAMDUMP) */
-
 #if IS_ENABLED(CONFIG_QCOM_RAMDUMP)
 int cnss_do_ramdump(struct cnss_plat_data *plat_priv)
 {
@@ -3398,10 +3004,6 @@ int cnss_do_ramdump(struct cnss_plat_data *plat_priv)
 	struct qcom_dump_segment segment;
 	struct list_head head;
 
-	if (!cnss_dump_enabled()) {
-		cnss_pr_info("Dump collection is not enabled\n");
-		return 0;
-	}
 	INIT_LIST_HEAD(&head);
 	memset(&segment, 0, sizeof(segment));
 	segment.va = ramdump_info->ramdump_va;
@@ -3454,6 +3056,7 @@ do {									\
  */
 #define qcom_dump_segment cnss_qcom_dump_segment
 #define qcom_elf_dump cnss_qcom_elf_dump
+#define dump_enabled cnss_dump_enabled
 
 struct cnss_qcom_dump_segment {
 	struct list_head node;
@@ -3525,8 +3128,8 @@ static void init_elf_identification(struct elf32_hdr *ehdr, unsigned char class)
 	ehdr->e_ident[EI_OSABI] = ELFOSABI_NONE;
 }
 
-static int cnss_qcom_elf_dump(struct list_head *segs, struct device *dev,
-			      unsigned char class)
+int cnss_qcom_elf_dump(struct list_head *segs, struct device *dev,
+		       unsigned char class)
 {
 	struct cnss_qcom_dump_segment *segment;
 	void *phdr, *ehdr;
@@ -3594,6 +3197,12 @@ static int cnss_qcom_elf_dump(struct list_head *segs, struct device *dev,
 
 	return cnss_qcom_devcd_dump(dev, data, data_size, GFP_KERNEL);
 }
+
+/* Saving dump to file system is always needed in this case. */
+static bool cnss_dump_enabled(void)
+{
+	return true;
+}
 #endif /* CONFIG_QCOM_RAMDUMP */
 
 int cnss_do_elf_ramdump(struct cnss_plat_data *plat_priv)
@@ -3606,7 +3215,7 @@ int cnss_do_elf_ramdump(struct cnss_plat_data *plat_priv)
 	struct list_head head;
 	int i, ret = 0;
 
-	if (!cnss_dump_enabled()) {
+	if (!dump_enabled()) {
 		cnss_pr_info("Dump collection is not enabled\n");
 		return ret;
 	}
@@ -3807,7 +3416,7 @@ int cnss_do_host_ramdump(struct cnss_plat_data *plat_priv,
 	int ret = 0;
 	enum cnss_host_dump_type j;
 
-	if (!cnss_dump_enabled()) {
+	if (!dump_enabled()) {
 		cnss_pr_info("Dump collection is not enabled\n");
 		return ret;
 	}
@@ -4449,7 +4058,7 @@ static int cnss_register_bus_scale(struct cnss_plat_data *plat_priv)
 static void cnss_unregister_bus_scale(struct cnss_plat_data *plat_priv) {}
 #endif /* CONFIG_INTERCONNECT */
 
-static void cnss_daemon_connection_update_cb(void *cb_ctx, bool status)
+void cnss_daemon_connection_update_cb(void *cb_ctx, bool status)
 {
 	struct cnss_plat_data *plat_priv = cb_ctx;
 
@@ -4566,7 +4175,7 @@ static ssize_t time_sync_period_show(struct device *dev,
  *
  * Result: return minimum time sync period present in vote from wlan and sys
  */
-static uint32_t cnss_get_min_time_sync_period_by_vote(struct cnss_plat_data *plat_priv)
+uint32_t cnss_get_min_time_sync_period_by_vote(struct cnss_plat_data *plat_priv)
 {
 	unsigned int i, min_time_sync_period = CNSS_TIME_SYNC_PERIOD_INVALID;
 	unsigned int time_sync_period;
@@ -5065,8 +4674,7 @@ int cnss_wlan_hw_disable_check(struct cnss_plat_data *plat_priv)
 
 	peripheralStateInfo = qcom_smem_get(QCOM_SMEM_HOST_ANY, PERISEC_SMEM_ID, &size);
 	if (IS_ERR_OR_NULL(peripheralStateInfo)) {
-		if (PTR_ERR(peripheralStateInfo) != -ENOENT &&
-		    PTR_ERR(peripheralStateInfo) != -ENODEV)
+		if (PTR_ERR(peripheralStateInfo) != -ENOENT)
 			CNSS_ASSERT(0);
 
 		cnss_pr_dbg("Secure HW feature not enabled. ret = %d\n",
@@ -5465,13 +5073,6 @@ cnss_dt_type(struct cnss_plat_data *plat_priv)
 	return CNSS_DTT_LEGACY;
 }
 
-static inline bool
-cnss_resource_is_fw_managed(struct cnss_plat_data *plat_priv)
-{
-	return of_property_read_bool(plat_priv->plat_dev->dev.of_node,
-				     "firmware-managed-resources");
-}
-
 static int cnss_wlan_device_init(struct cnss_plat_data *plat_priv)
 {
 	int ret = 0;
@@ -5793,8 +5394,6 @@ static int cnss_probe(struct platform_device *plat_dev)
 	plat_priv->use_fw_path_with_prefix =
 		cnss_use_fw_path_with_prefix(plat_priv);
 
-	plat_priv->is_fw_managed_pwr = cnss_resource_is_fw_managed(plat_priv);
-
 	ret = cnss_get_dev_cfg_node(plat_priv);
 	if (ret) {
 		cnss_pr_err("Failed to get device cfg node, err = %d\n", ret);
@@ -5817,6 +5416,7 @@ static int cnss_probe(struct platform_device *plat_dev)
 
 	plat_priv->bus_type = cnss_get_bus_type(plat_priv);
 	plat_priv->use_nv_mac = cnss_use_nv_mac(plat_priv);
+	plat_priv->driver_mode = CNSS_DRIVER_MODE_MAX;
 	cnss_set_plat_priv(plat_dev, plat_priv);
 	cnss_set_device_name(plat_priv);
 	platform_set_drvdata(plat_dev, plat_priv);
@@ -5826,7 +5426,6 @@ static int cnss_probe(struct platform_device *plat_dev)
 	cnss_get_pm_domain_info(plat_priv);
 	cnss_get_wlaon_pwr_ctrl_info(plat_priv);
 	cnss_power_misc_params_init(plat_priv);
-	cnss_pci_of_switch_type_init(plat_priv);
 	cnss_get_tcs_info(plat_priv);
 	cnss_get_cpr_info(plat_priv);
 	cnss_aop_interface_init(plat_priv);
@@ -5893,7 +5492,6 @@ deinit_misc:
 destroy_debugfs:
 	cnss_debugfs_destroy(plat_priv);
 deinit_dms:
-	cnss_cancel_dms_work(plat_priv);
 	cnss_dms_deinit(plat_priv);
 deinit_event_work:
 	cnss_event_work_deinit(plat_priv);
@@ -5915,11 +5513,7 @@ out:
 	return ret;
 }
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0))
 static int cnss_remove(struct platform_device *plat_dev)
-#else
-static void cnss_remove(struct platform_device *plat_dev)
-#endif
 {
 	struct cnss_plat_data *plat_priv = platform_get_drvdata(plat_dev);
 
@@ -5930,10 +5524,10 @@ static void cnss_remove(struct platform_device *plat_dev)
 	cnss_bus_deinit(plat_priv);
 	cnss_misc_deinit(plat_priv);
 	cnss_debugfs_destroy(plat_priv);
-	cnss_cancel_dms_work(plat_priv);
 	cnss_dms_deinit(plat_priv);
 	cnss_qmi_deinit(plat_priv);
 	cnss_event_work_deinit(plat_priv);
+	cnss_cancel_dms_work();
 	cnss_remove_sysfs(plat_priv);
 	cnss_unregister_bus_scale(plat_priv);
 	cnss_unregister_esoc(plat_priv);
@@ -5943,9 +5537,7 @@ static void cnss_remove(struct platform_device *plat_dev)
 	platform_set_drvdata(plat_dev, NULL);
 	cnss_clear_plat_priv(plat_priv);
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0))
 	return 0;
-#endif
 }
 
 static struct platform_driver cnss_platform_driver = {
@@ -6016,7 +5608,6 @@ static int __init cnss_initialize(void)
 	if (ret < 0)
 		cnss_pr_err("CNSS genl init failed %d\n", ret);
 
-	cnss_init_plat_env_count();
 	return ret;
 }
 

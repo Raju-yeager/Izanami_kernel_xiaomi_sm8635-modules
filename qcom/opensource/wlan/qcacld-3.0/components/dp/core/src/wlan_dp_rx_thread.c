@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2014-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -600,8 +600,8 @@ static int dp_rx_thread_sub_loop(struct dp_rx_thread *rx_thread, bool *shutdown)
 				qdf_event_set(&rx_thread->suspend_event);
 			}
 			dp_debug("shutting down (%s) id %d pid %d",
-				 qdf_get_current_comm(), rx_thread->id,
-				 qdf_get_current_pid());
+				 current->comm, rx_thread->id,
+				 current->pid);
 			*shutdown = true;
 			break;
 		}
@@ -628,12 +628,12 @@ static int dp_rx_thread_sub_loop(struct dp_rx_thread *rx_thread, bool *shutdown)
 		if (qdf_atomic_test_and_clear_bit(RX_SUSPEND_EVENT,
 						  &rx_thread->event_flag)) {
 			dp_debug("received suspend ind (%s) id %d pid %d",
-				 qdf_get_current_comm(), rx_thread->id,
-				 qdf_get_current_pid());
+				 current->comm, rx_thread->id,
+				 current->pid);
 			qdf_event_set(&rx_thread->suspend_event);
 			dp_debug("waiting for resume (%s) id %d pid %d",
-				 qdf_get_current_comm(), rx_thread->id,
-				 qdf_get_current_pid());
+				 current->comm, rx_thread->id,
+				 current->pid);
 			qdf_wait_single_event(&rx_thread->resume_event, 0);
 		}
 		break;
@@ -662,12 +662,12 @@ static int dp_rx_thread_loop(void *arg)
 
 	tm_handle_cmn = rx_thread->rtm_handle_cmn;
 
-	qdf_set_user_nice(qdf_get_current_task(), -1);
+	qdf_set_user_nice(current, -1);
 	qdf_set_wake_up_idle(true);
 
 	qdf_event_set(&rx_thread->start_event);
-	dp_info("starting rx_thread (%s) id %d pid %d", qdf_get_current_comm(),
-		rx_thread->id, qdf_get_current_pid());
+	dp_info("starting rx_thread (%s) id %d pid %d", current->comm,
+		rx_thread->id, current->pid);
 	while (!shutdown) {
 		/* This implements the execution model algorithm */
 		dp_debug("sleeping");
@@ -691,8 +691,8 @@ static int dp_rx_thread_loop(void *arg)
 	}
 
 	/* If we get here the scheduler thread must exit */
-	dp_info("exiting (%s) id %d pid %d", qdf_get_current_comm(),
-		rx_thread->id, qdf_get_current_pid());
+	dp_info("exiting (%s) id %d pid %d", current->comm,
+		rx_thread->id, current->pid);
 	qdf_event_set(&rx_thread->shutdown_event);
 
 	return 0;
@@ -709,7 +709,7 @@ static int dp_rx_refill_thread_sub_loop(struct dp_rx_refill_thread *rx_thread,
 				qdf_event_set(&rx_thread->suspend_event);
 			}
 			dp_debug("shutting down (%s) pid %d",
-				 qdf_get_current_comm(), qdf_get_current_pid());
+				 current->comm, current->pid);
 			*shutdown = true;
 			break;
 		}
@@ -719,12 +719,12 @@ static int dp_rx_refill_thread_sub_loop(struct dp_rx_refill_thread *rx_thread,
 		if (qdf_atomic_test_and_clear_bit(RX_REFILL_SUSPEND_EVENT,
 						  &rx_thread->event_flag)) {
 			dp_debug("refill thread received suspend ind (%s) pid %d",
-				 qdf_get_current_comm(),
-				 qdf_get_current_pid());
+				 current->comm,
+				 current->pid);
 			qdf_event_set(&rx_thread->suspend_event);
 			dp_debug("refill thread waiting for resume (%s) pid %d",
-				 qdf_get_current_comm(),
-				 qdf_get_current_pid());
+				 current->comm,
+				 current->pid);
 			qdf_wait_single_event(&rx_thread->resume_event, 0);
 		}
 		break;
@@ -744,12 +744,12 @@ static int dp_rx_refill_thread_loop(void *arg)
 		return 0;
 	}
 
-	qdf_set_user_nice(qdf_get_current_task(), -1);
+	qdf_set_user_nice(current, -1);
 	qdf_set_wake_up_idle(true);
 
 	qdf_event_set(&rx_thread->start_event);
-	dp_info("starting rx_refill_thread (%s) pid %d", qdf_get_current_comm(),
-		qdf_get_current_pid());
+	dp_info("starting rx_refill_thread (%s) pid %d", current->comm,
+		current->pid);
 	while (!shutdown) {
 		/* This implements the execution model algorithm */
 		status =
@@ -771,8 +771,8 @@ static int dp_rx_refill_thread_loop(void *arg)
 	}
 
 	/* If we get here the scheduler thread must exit */
-	dp_info("exiting (%s) pid %d", qdf_get_current_comm(),
-		qdf_get_current_pid());
+	dp_info("exiting (%s) pid %d", current->comm,
+		current->pid);
 	qdf_event_set(&rx_thread->shutdown_event);
 
 	return 0;
@@ -792,27 +792,6 @@ static int dp_rx_tm_thread_napi_poll(qdf_napi_struct *napi, int budget)
 	return 0;
 }
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0))
-/**
- * dp_rx_thread_get_dummy_netdev_ptr() - Get dummy netdev pointer
- * fromdp rx thread
- * @rx_thread: DP RX thread pointer
- *
- * Return: dummy netdev pointer
- */
-static inline struct net_device *
-dp_rx_thread_get_dummy_netdev_ptr(struct dp_rx_thread *rx_thread)
-{
-	return rx_thread->netdev;
-}
-#else
-static inline struct net_device *
-dp_rx_thread_get_dummy_netdev_ptr(struct dp_rx_thread *rx_thread)
-{
-	return &rx_thread->netdev;
-}
-#endif
-
 /**
  * dp_rx_tm_thread_napi_init() - Initialize dummy rx_thread NAPI
  * @rx_thread: dp_rx_thread structure containing dummy napi and netdev
@@ -821,12 +800,9 @@ dp_rx_thread_get_dummy_netdev_ptr(struct dp_rx_thread *rx_thread)
  */
 static void dp_rx_tm_thread_napi_init(struct dp_rx_thread *rx_thread)
 {
-	struct net_device *dummy_nd;
-
-	dummy_nd = dp_rx_thread_get_dummy_netdev_ptr(rx_thread);
 	/* Todo - optimize to use only one dummy netdev for all thread napis */
-	qdf_net_if_create_dummy_if((struct qdf_net_if **)&dummy_nd);
-	qdf_netif_napi_add(dummy_nd, &rx_thread->napi,
+	qdf_net_if_create_dummy_if((struct qdf_net_if *)&rx_thread->netdev);
+	qdf_netif_napi_add(&rx_thread->netdev, &rx_thread->napi,
 			   dp_rx_tm_thread_napi_poll, 64);
 	qdf_napi_enable(&rx_thread->napi);
 }
@@ -839,11 +815,6 @@ static void dp_rx_tm_thread_napi_init(struct dp_rx_thread *rx_thread)
  */
 static void dp_rx_tm_thread_napi_deinit(struct dp_rx_thread *rx_thread)
 {
-	struct net_device *dummy_nd;
-
-	dummy_nd = dp_rx_thread_get_dummy_netdev_ptr(rx_thread);
-	qdf_net_if_destroy_dummy_if((struct qdf_net_if *)dummy_nd);
-
 	qdf_netif_napi_del(&rx_thread->napi);
 }
 

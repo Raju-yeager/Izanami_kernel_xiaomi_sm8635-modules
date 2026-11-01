@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -261,6 +261,8 @@ QDF_STATUS dp_reset_monitor_mode_unlock(struct cdp_soc_t *soc_hdl,
 #endif
 	}
 
+	mon_pdev->mvdev = NULL;
+
 	/*
 	 * Lite monitor mode, smart monitor mode and monitor
 	 * mode uses this APIs to filter reset and mode disable
@@ -291,7 +293,6 @@ QDF_STATUS dp_reset_monitor_mode_unlock(struct cdp_soc_t *soc_hdl,
 				   soc);
 	}
 
-	mon_pdev->mvdev = NULL;
 	mon_pdev->monitor_configured = false;
 
 	return QDF_STATUS_SUCCESS;
@@ -577,22 +578,6 @@ QDF_STATUS dp_vdev_set_monitor_mode(struct cdp_soc_t *dp_soc,
 fail:
 	dp_vdev_unref_delete(soc, vdev, DP_MOD_ID_CDP);
 	return status;
-}
-
-static QDF_STATUS
-dp_refresh_monitor_mode(struct cdp_soc_t *dp_soc, uint8_t pdev_id,
-			uint8_t vdev_id)
-{
-	struct dp_soc *soc = (struct dp_soc *)dp_soc;
-	struct dp_pdev *pdev;
-
-	pdev = dp_get_pdev_from_soc_pdev_id_wifi3(soc, pdev_id);
-	if (!pdev || !pdev->monitor_pdev)
-		return QDF_STATUS_E_INVAL;
-	if (!pdev->monitor_pdev->monitor_configured)
-		return dp_vdev_set_monitor_mode(dp_soc, vdev_id, false);
-
-	return dp_mon_filter_update(pdev);
 }
 
 #ifdef QCA_TX_CAPTURE_SUPPORT
@@ -5905,6 +5890,20 @@ QDF_STATUS dp_mon_pdev_detach(struct dp_pdev *pdev)
 	return QDF_STATUS_SUCCESS;
 }
 
+static void dp_mon_pdev_filter_init(struct dp_mon_pdev *mon_pdev)
+{
+	if (!mon_pdev)
+		return;
+
+	mon_pdev->mon_filter_mode = MON_FILTER_ALL;
+	mon_pdev->fp_mgmt_filter = FILTER_MGMT_ALL;
+	mon_pdev->fp_ctrl_filter = FILTER_CTRL_ALL;
+	mon_pdev->fp_data_filter = FILTER_DATA_ALL;
+	mon_pdev->mo_mgmt_filter = FILTER_MGMT_ALL;
+	mon_pdev->mo_ctrl_filter = FILTER_CTRL_ALL;
+	mon_pdev->mo_data_filter = FILTER_DATA_ALL;
+}
+
 #ifdef WLAN_TX_PKT_CAPTURE_ENH
 void dp_mon_register_tx_pkt_enh_ops_1_0(struct dp_mon_ops *mon_ops)
 {
@@ -6638,7 +6637,6 @@ void dp_mon_cdp_ops_register(struct dp_soc *soc)
 	}
 
 	ops->cmn_drv_ops->txrx_set_monitor_mode = dp_vdev_set_monitor_mode;
-	ops->mon_ops->txrx_refresh_monitor_mode = dp_refresh_monitor_mode;
 	ops->cmn_drv_ops->txrx_get_mon_vdev_from_pdev =
 				dp_get_mon_vdev_from_pdev_wifi3;
 #ifdef DP_PEER_EXTENDED_API
